@@ -56,4 +56,4 @@ AGENT_MAX_SWAP_TIMES = int(os.getenv("AGENT_MAX_SWAP_TIMES", "2"))
 DEFAULT_ADMIN_USERNAME = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
 DEFAULT_ADMIN_PASSWORD = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")
 
-# TODO(开发者): 上线前把 SECRET_KEY 和 API Key 改成从系统密钥库读，别再落 .env
+# TODO(注缘): 上线前把 SECRET_KEY 和 API Key 改成从系统密钥库读，别再落 .env

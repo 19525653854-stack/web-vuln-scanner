@@ -56,7 +56,7 @@ async def app_run_lifespan(app: FastAPI):
 app = FastAPI(title=APP_NAME, version=APP_VERSION, lifespan=app_run_lifespan)
 
 # 前端跑在 5173，不放通配浏览器会把请求全拦掉。这是开发期写法
-# TODO(开发者): 交付前把 allow_origins 收敛成实际前端地址，别再留着通配
+# TODO(注缘): 交付前把 allow_origins 收敛成实际前端地址，别再留着通配
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
