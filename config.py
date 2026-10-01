@@ -51,4 +51,9 @@ AGENT_MAX_ROUND = int(os.getenv("AGENT_MAX_ROUND", "15"))
 AGENT_FAIL_SWAP_THRESHOLD = int(os.getenv("AGENT_FAIL_SWAP_THRESHOLD", "3"))
 AGENT_MAX_SWAP_TIMES = int(os.getenv("AGENT_MAX_SWAP_TIMES", "2"))
 
+# ---- 首次启动建的管理员账号：装完就能登进去，部署完第一件事就是改掉它 ----
+# 口令从环境变量读，不写死在代码里，不然换个部署环境还得回来改源码
+DEFAULT_ADMIN_USERNAME = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
+DEFAULT_ADMIN_PASSWORD = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")
+
 # TODO(开发者): 上线前把 SECRET_KEY 和 API Key 改成从系统密钥库读，别再落 .env
