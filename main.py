@@ -16,9 +16,11 @@ from fastapi.responses import JSONResponse
 
 from api.auth_router import auth_create_default_user
 from api.auth_router import router as auth_router
+from api.job_router import router as job_router
 from api.target_router import router as target_router
 from config import APP_NAME, APP_VERSION
 from models.database import db_create_tables
+from tools.job_scheduler import job_start_scheduler, job_stop_scheduler
 
 # 单进程用 basicConfig 就够了，真上多进程再换结构化日志
 logging.basicConfig(
@@ -41,8 +43,13 @@ async def app_run_lifespan(app: FastAPI):
     if default_user_name:
         logger.info("首次启动，已创建默认账号 %s，部署后记得改密码", default_user_name)
 
+    # 调度器放在建表之后启动。倒过来它可能先于表去接任务，第一条任务就得失败
+    job_start_scheduler()
+
     logger.info("%s %s 启动完成", APP_NAME, APP_VERSION)
     yield
+
+    job_stop_scheduler()
     logger.info("服务已停止")
 
 
@@ -60,6 +67,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(target_router)
+app.include_router(job_router)
 
 
 @app.exception_handler(HTTPException)
