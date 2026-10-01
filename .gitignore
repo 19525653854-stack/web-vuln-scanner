@@ -1,0 +1,30 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- 前端 ----
+frontend/node_modules/
+frontend/dist/
+npm-debug.log*
+
+# ---- 运行期产物：库文件、日志、生成报告 ----
+data/
+logs/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# ---- 密钥：绝不能进仓库 ----
+.env
+.env.local
+
+# ---- 编辑器与系统 ----
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini

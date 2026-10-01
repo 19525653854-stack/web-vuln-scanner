@@ -1,0 +1,13 @@
+# 换行符策略
+# 源码在仓库里统一存 LF；bat 必须原样保留 CRLF——否则从 GitHub 下载 ZIP 拿到的 bat
+# 是纯 LF 换行，cmd 执行 call :label 会跳到行中间去跑碎片代码，这个坑踩过一次
+* text=auto eol=lf
+*.bat -text
+*.cmd -text
+
+# 二进制文件不参与换行符转换
+*.png binary
+*.jpg binary
+*.pdf binary
+*.db binary
+*.xlsx binary

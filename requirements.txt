@@ -1,0 +1,22 @@
+# 后端核心依赖。版本区间而非精确锁定，方便在 Python 3.11 到 3.13 之间都能装
+fastapi>=0.115
+uvicorn[standard]>=0.32
+sqlalchemy>=2.0
+pydantic>=2.9
+python-dotenv>=1.0
+python-multipart>=0.0.12
+
+# 认证与令牌
+passlib>=1.7.4
+PyJWT>=2.9
+
+# 扫描与解析
+requests>=2.32
+beautifulsoup4>=4.12
+
+# 报告与调度
+reportlab>=4.2
+APScheduler>=3.10
+
+# 测试用
+httpx>=0.27
