@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from api.auth_router import auth_create_default_user
 from api.auth_router import router as auth_router
+from api.target_router import router as target_router
 from config import APP_NAME, APP_VERSION
 from models.database import db_create_tables
 
@@ -58,6 +59,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(target_router)
 
 
 @app.exception_handler(HTTPException)
