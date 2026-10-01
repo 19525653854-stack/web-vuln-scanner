@@ -34,9 +34,14 @@ echo [2/3] 正在安装后端依赖，第一次会比较慢 ...
 ".venv\Scripts\python.exe" -m pip install --upgrade pip
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 if errorlevel 1 (
-    echo [错误] 依赖安装失败，请检查网络后重试
-    pause
-    exit /b 1
+    echo        国内镜像没装全，换官方源再补一次
+    echo        cryptography 这类包在部分镜像上有同步延迟，走到这一步是正常的
+    ".venv\Scripts\python.exe" -m pip install -r requirements.txt
+    if errorlevel 1 (
+        echo [错误] 依赖安装失败，请检查网络后重试
+        pause
+        exit /b 1
+    )
 )
 
 if not exist ".env" (

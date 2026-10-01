@@ -10,6 +10,10 @@ python-multipart>=0.0.12
 passlib>=1.7.4
 PyJWT>=2.9
 
+# 密钥加密：模型 API Key 落库前先加密
+# 注意这个包在部分国内镜像上拉不到（会报 from versions: none），装不上就换官方源
+cryptography>=42
+
 # 扫描与解析
 requests>=2.32
 beautifulsoup4>=4.12

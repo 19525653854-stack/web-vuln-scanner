@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from api.auth_router import auth_create_default_user
 from api.auth_router import router as auth_router
+from api.config_router import router as config_router
 from api.job_router import router as job_router
 from api.target_router import router as target_router
 from config import APP_NAME, APP_VERSION
@@ -72,6 +73,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(target_router)
 app.include_router(job_router)
+app.include_router(config_router)
 
 
 @app.exception_handler(HTTPException)
