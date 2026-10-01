@@ -3,10 +3,21 @@
 # 为什么：智谱的鉴权方式和 OpenAI 不一样——不能直接把 API Key 当 Bearer 用，
 #         得先用它签一个短时效的 JWT 再去换请求资格。照抄 OpenAI 那套会一直 401
 # 放弃了：不做 token 缓存。V1.0 调用频率很低，每次多签一次 JWT 无所谓，缓存反而容易踩到过期
+import warnings
 from datetime import datetime, timedelta, timezone
 
 import jwt
 import requests
+
+try:
+    from jwt.exceptions import InsecureKeyLengthWarning
+except ImportError:
+    # 老版本 PyJWT 没有这个警告类，退到基类，过滤范围只是宽一点点
+    InsecureKeyLengthWarning = Warning
+
+# 智谱的 secret 段只有 16 字节，比 RFC 7518 建议的 32 字节短，但长度是厂商定的，我们改不了。
+# 2026-10-01 过滤掉这条：每次调用都刷两遍，日志里真正的告警会被它淹掉
+warnings.filterwarnings("ignore", category=InsecureKeyLengthWarning)
 
 # 签出去的 JWT 只活 5 分钟。够发一次请求就行，签长了万一泄露窗口也大
 TOKEN_ALIVE_MINUTES = 5
