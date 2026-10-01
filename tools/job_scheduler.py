@@ -110,20 +110,24 @@ def job_run_scan(job_id):
 
 
 def job_execute_pipeline(job_row, session):
-    # 设计说明：扫描管线，按侦察阶段逐轮推进，返回实际执行的轮数
-    # 为什么：侦察分两步——先端口扫描摸暴露面，再指纹识别认技术栈。顺序不能反，
-    #         不知道哪些端口开着，就不知道往哪儿发 HTTP 请求
+    # 设计说明：扫描管线，按阶段推进，返回实际执行的轮数
+    # 为什么：顺序不能乱——先按上下文匹配并加载技能，再端口扫描摸暴露面，最后指纹识别认技术栈。
+    #         不知道目标是什么，就无从决定该调哪个技能
     # 放弃了：不做侦察结果缓存。同一个目标隔几天重扫，缓存的端口可能已经变了
     #
     # TODO(注缘): PSV 循环接进来之后，这里改成由规划器决定每轮做什么，别再写死顺序
-    # V1.0 先把侦察这两轮接进来，后面的技能逐个模块补
+    # V1.0 先把侦察链路接通，后面的技能逐个模块补
     #
-    # 先让工具模块完成自我注册。只 import 不调用，import 时模块底部的 tool_register 就执行了
-    # 2026-10-01 漏了 http_tool 这一行，任务跑到第二轮直接报"工具 http_probe 没有注册"，
-    # 加了工具就得在这里补一行，否则调得到名字、拿不到实现
-    import skills.web_recon.scripts.fingerprint  # noqa: F401
+    # tools/ 下的工具要在这里显式 import，import 时模块底部的 tool_register 会完成注册。
+    # 2026-10-01 漏了 http_tool 这一行，任务跑到第二轮直接报"工具 http_probe 没有注册"
     import tools.http_tool  # noqa: F401
     import tools.port_tool  # noqa: F401
+    from skills.skill_manager import (
+        skill_inject_dynamic_context,
+        skill_load_body,
+        skill_load_scripts,
+        skill_match_by_context,
+    )
     from tools.tool_registry import tool_invoke
 
     target_row = session.query(Target).filter(Target.id == job_row.target_id).first()
@@ -132,9 +136,40 @@ def job_execute_pipeline(job_row, session):
         # 地址里连主机名都没有，属于脏数据，直接报错走 failed，别闷头扫下去
         raise ValueError("目标地址里取不到主机名：%s" % target_row.target_url)
 
+    # 第零步：匹配技能。新任务一律从侦察开始，这几个关键词描述的就是这个意图
+    matched_skills = skill_match_by_context(["侦察", "端口", "暴露面", target_host])
+    if not matched_skills:
+        raise RuntimeError("没有匹配到可用技能，目标 %s 没法下手" % target_host)
+    loaded_skill_name = matched_skills[0]
+
+    # 技能正文里的 {{execute: target_url}} 到这里才换成真值。
+    # 值是本进程给的，不经过任何 shell，所以不用担心被目标地址带出命令注入
+    skill_context = {
+        "target_url": target_row.target_url,
+        "fingerprint": "尚未识别",
+        "round_index": 0,
+    }
+    skill_body = skill_inject_dynamic_context(skill_load_body(loaded_skill_name), skill_context)
+
+    # 加载技能脚本。技能自带的工具（比如指纹识别）在这一步完成注册，后面才调得到
+    skill_load_scripts(loaded_skill_name)
+
+    session.add(AuditLog(
+        job_id=job_row.id,
+        log_type="decision",
+        log_content="匹配并加载技能 %s" % loaded_skill_name,
+        log_reason="命中关键词：侦察/端口/暴露面；正文注入后 %s 字" % len(skill_body),
+    ))
+    session.commit()
+
     # 第一轮固定做端口扫描。先摸清暴露面，后面才有得测
     open_ports = tool_invoke("port_scan", raw_host=target_host)
-    recon_result = {"host": target_host, "open_ports": open_ports}
+    recon_result = {
+        "host": target_host,
+        "loaded_skill": loaded_skill_name,
+        "skill_context": skill_context,
+        "open_ports": open_ports,
+    }
 
     job_row.current_round = 1
     # 侦察结果存进计划快照。报告要复盘"当时摸到了什么"，全靠这份快照
@@ -162,6 +197,8 @@ def job_execute_pipeline(job_row, session):
     http_result = tool_invoke("http_probe", raw_url=target_row.target_url)
     fingerprint_result = tool_invoke("fingerprint", http_result=http_result)
     recon_result["fingerprint"] = fingerprint_result
+    # 识别完把指纹回填进技能上下文，下一轮加载技能正文时 {{execute: fingerprint}} 就有值了
+    skill_context["fingerprint"] = "、".join(fingerprint_result.get("technologies") or []) or "未识别出"
 
     job_row.current_round = 2
     job_row.plan_snapshot = json.dumps({"recon": recon_result}, ensure_ascii=False)
