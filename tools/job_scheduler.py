@@ -20,6 +20,10 @@ from models.tables import AuditLog, Job, Target
 
 logger = logging.getLogger("ai_scanner.job")
 
+# 这几个端口任意一个开着，就说明目标有 Web 入口，值得往下做指纹识别。
+# 跟着 skills/web_recon/SKILL.md 里写的判定条件走，两边别写岔
+WEB_PORT_SET = {80, 443, 8080, 8443}
+
 # 并发数直接读 config 的安全约束，这里不再单独配一份。改一处就够，两处迟早改岔
 scan_scheduler = BackgroundScheduler(
     executors={"default": ThreadPoolExecutor(SCAN_MAX_CONCURRENCY)},
@@ -106,14 +110,19 @@ def job_run_scan(job_id):
 
 
 def job_execute_pipeline(job_row, session):
-    # 设计说明：扫描管线，逐轮推进，返回实际执行的轮数
-    # 为什么：侦察必须是第一轮。后面所有测试都要靠这轮摸到的端口分布决定测什么
+    # 设计说明：扫描管线，按侦察阶段逐轮推进，返回实际执行的轮数
+    # 为什么：侦察分两步——先端口扫描摸暴露面，再指纹识别认技术栈。顺序不能反，
+    #         不知道哪些端口开着，就不知道往哪儿发 HTTP 请求
     # 放弃了：不做侦察结果缓存。同一个目标隔几天重扫，缓存的端口可能已经变了
     #
     # TODO(注缘): PSV 循环接进来之后，这里改成由规划器决定每轮做什么，别再写死顺序
-    # V1.0 先把第一轮端口扫描接进来，后面的技能逐个模块补
+    # V1.0 先把侦察这两轮接进来，后面的技能逐个模块补
     #
     # 先让工具模块完成自我注册。只 import 不调用，import 时模块底部的 tool_register 就执行了
+    # 2026-10-01 漏了 http_tool 这一行，任务跑到第二轮直接报"工具 http_probe 没有注册"，
+    # 加了工具就得在这里补一行，否则调得到名字、拿不到实现
+    import skills.web_recon.scripts.fingerprint  # noqa: F401
+    import tools.http_tool  # noqa: F401
     import tools.port_tool  # noqa: F401
     from tools.tool_registry import tool_invoke
 
@@ -125,13 +134,11 @@ def job_execute_pipeline(job_row, session):
 
     # 第一轮固定做端口扫描。先摸清暴露面，后面才有得测
     open_ports = tool_invoke("port_scan", raw_host=target_host)
+    recon_result = {"host": target_host, "open_ports": open_ports}
 
     job_row.current_round = 1
     # 侦察结果存进计划快照。报告要复盘"当时摸到了什么"，全靠这份快照
-    job_row.plan_snapshot = json.dumps(
-        {"recon": {"host": target_host, "open_ports": open_ports}},
-        ensure_ascii=False,
-    )
+    job_row.plan_snapshot = json.dumps({"recon": recon_result}, ensure_ascii=False)
     session.add(AuditLog(
         job_id=job_row.id,
         log_type="tool",
@@ -139,4 +146,33 @@ def job_execute_pipeline(job_row, session):
         log_reason="开放端口 %s 个" % len(open_ports),
     ))
     session.commit()
-    return 1
+
+    # 第二轮做指纹识别。没有 Web 端口就直接跳过——连 HTTP 入口都没有，认技术栈没有意义
+    web_ports = [item["port"] for item in open_ports if item["port"] in WEB_PORT_SET]
+    if not web_ports:
+        session.add(AuditLog(
+            job_id=job_row.id,
+            log_type="decision",
+            log_content="没有开放的 Web 端口，跳过指纹识别",
+            log_reason="本轮开放端口：%s" % [item["port"] for item in open_ports],
+        ))
+        session.commit()
+        return 1
+
+    http_result = tool_invoke("http_probe", raw_url=target_row.target_url)
+    fingerprint_result = tool_invoke("fingerprint", http_result=http_result)
+    recon_result["fingerprint"] = fingerprint_result
+
+    job_row.current_round = 2
+    job_row.plan_snapshot = json.dumps({"recon": recon_result}, ensure_ascii=False)
+    session.add(AuditLog(
+        job_id=job_row.id,
+        log_type="tool",
+        log_content="指纹识别完成：%s" % target_row.target_url,
+        log_reason="技术栈 %s，缺失安全响应头 %s 项" % (
+            fingerprint_result.get("technologies"),
+            len(fingerprint_result.get("missing_security_headers") or []),
+        ),
+    ))
+    session.commit()
+    return 2
