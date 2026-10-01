@@ -5,9 +5,22 @@
 #
 # 2026-09-29 把 model_config 加进来。原本只打算建三张业务表，模型信息准备写死在 config.py 里，
 # 后来确认要支持用户随时切换厂商，写死那套根本撑不住
+# 2026-10-01 补外键和索引。一开始只写了关联用的整型字段，没有任何约束，插一条 job_id 不存在的
+# 漏洞记录照样能进——真出脏数据的时候才发现少了东西
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 
 from models.database import Base
 
@@ -37,13 +50,21 @@ class Target(Base):
     authorized_at = Column(DateTime, nullable=True, comment="授权确认时间")
     created_at = Column(DateTime, default=datetime.now)
 
+    __table_args__ = (
+        # 目标列表默认按创建时间倒序翻，走这条索引就不用全表扫
+        Index("idx_target_created", "created_at"),
+    )
+
 
 class Job(Base):
     # 设计说明：扫描任务表。同一个目标可以反复扫，每扫一次算一条独立任务
     __tablename__ = "job"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    target_id = Column(Integer, nullable=False, comment="关联 target.id")
+    # 删目标的时候连带着把任务删掉。任务脱离目标没有任何意义，留着只会让报告对不上号
+    target_id = Column(
+        Integer, ForeignKey("target.id", ondelete="CASCADE"), nullable=False, comment="关联 target.id"
+    )
     # 2026-10-01 从 job_status 改名过来，对齐规范里给的示例变量 current_job_status
     current_job_status = Column(String(32), default="pending", comment="pending/running/done/failed")
     current_round = Column(Integer, default=0, comment="智能体当前进行到第几轮")
@@ -54,6 +75,11 @@ class Job(Base):
     finished_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
 
+    __table_args__ = (
+        # 任务页要按目标查、按状态筛，这两个字段经常一起出现在 where 里
+        Index("idx_job_target_status", "target_id", "current_job_status"),
+    )
+
 
 class Finding(Base):
     # 设计说明：漏洞发现表，一行一个漏洞
@@ -62,7 +88,10 @@ class Finding(Base):
     __tablename__ = "finding"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    job_id = Column(Integer, nullable=False, comment="关联 job.id")
+    # 任务被删时漏洞跟着删。不然报告里会冒出找不到所属任务的孤儿记录
+    job_id = Column(
+        Integer, ForeignKey("job.id", ondelete="CASCADE"), nullable=False, comment="关联 job.id"
+    )
     vuln_type = Column(String(64), nullable=False, comment="漏洞类型，如 注入类 / 跨站脚本类")
     vuln_level = Column(String(16), default="medium", comment="high/medium/low")
     vuln_url = Column(String(512), nullable=True, comment="命中地址")
@@ -73,6 +102,11 @@ class Finding(Base):
     validate_reason = Column(Text, nullable=True, comment="验证器给出的判定理由")
     fix_suggestion = Column(Text, nullable=True, comment="修复建议")
     created_at = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        # 漏洞页默认按"某个任务下的高危"来翻，这个复合索引正好对上
+        Index("idx_finding_job_level", "job_id", "vuln_level"),
+    )
 
 
 class ModelConfig(Base):
@@ -100,6 +134,12 @@ class ModelConfig(Base):
     is_active = Column(Boolean, default=False, comment="同一时刻只应有一条为 true")
     created_at = Column(DateTime, default=datetime.now)
 
+    __table_args__ = (
+        # 配置名允许用户自己起，但不能重名——重名之后下拉框里根本分不清哪条是哪条
+        UniqueConstraint("config_name", name="uq_model_config_name"),
+        Index("idx_model_config_active", "is_active"),
+    )
+
 
 class AuditLog(Base):
     # 设计说明：审计日志表
@@ -107,9 +147,14 @@ class AuditLog(Base):
     __tablename__ = "audit_log"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    job_id = Column(Integer, nullable=True, comment="关联任务，系统级操作可为空")
+    # 这一条故意不写 ondelete=CASCADE：任务被删了，它留下的审计日志也得留着，不然事后查无对证
+    job_id = Column(Integer, ForeignKey("job.id"), nullable=True, comment="关联任务，系统级操作可为空")
     log_type = Column(String(32), nullable=False, comment="tool/decision/reflection/system")
     log_content = Column(Text, nullable=False, comment="日志正文")
     # 理由单独一列。只记"做了什么"没法复盘，得知道"当时为什么这么判断"
     log_reason = Column(Text, nullable=True, comment="决策理由，方案要求必须记")
     created_at = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        Index("idx_audit_job_created", "job_id", "created_at"),
+    )
