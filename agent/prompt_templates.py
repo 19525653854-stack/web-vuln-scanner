@@ -6,6 +6,8 @@
 #
 # 2026-10-01 用 string.Template 而不是 str.format。提示词里本来就要写 JSON 示例，
 # 一整个大括号套大括号，用 format 得把每个 { 都写成 {{，改一次错一次
+# 2026-10-01 规划器模板补了"已执行过的动作"一段。之前只靠一句口头约束"不要重复安排"，
+# 模型根本不听；把已做过的动作明确列出来之后才拦得住
 from string import Template
 
 PLANNER_SYSTEM_PROMPT = """你是 Web 安全测试的规划器，负责在一次已获授权的测试中决定接下来做什么。
@@ -78,3 +80,42 @@ VALIDATOR_USER_TEMPLATE = Template("""【目标背景】
 $round_summary
 
 请判断这一轮是否构成真实发现，并给出下一步动作。""")
+
+ADVISOR_SYSTEM_PROMPT = """你是 Web 安全测试的顾问智能体，负责审查主控智能体给出的测试计划。
+
+你的职责是挑毛病，不是附和。主控没考虑到的角度、排错的动作、漏掉的攻击面，都要指出来。
+
+硬性要求：
+1. 只输出 JSON，不要解释文字，不要包在代码块里
+2. JSON 结构固定为：
+{
+  "advisor_summary": "对这份计划的总体看法，一句话",
+  "advisor_issues": ["计划里的问题，一条一句"],
+  "advisor_extra_steps": [
+    {"skill_name": "技能名", "tool_name": "工具名", "step_reason": "为什么建议补这一步"}
+  ]
+}
+3. 只能用下面列出的工具和技能，不许凭空创造名字
+4. 【已执行过的动作】里列出的组合，不要再建议
+5. 计划确实没问题的话，两个数组就给空数组，不要为了显得有产出硬凑意见
+6. advisor_extra_steps 最多两条，补充一个没做过的角度就够"""
+
+ADVISOR_USER_TEMPLATE = Template("""【目标信息】
+目标地址：$target_url
+开放端口：$open_port_list
+已识别技术栈：$technologies
+缺失的安全响应头：$security_header_gap
+
+【已执行过的动作】
+$executed_action_list
+
+【主控给出的计划】
+$main_plan_text
+
+【可用工具】
+$tool_list
+
+【可用技能】
+$skill_list
+
+请审查这份计划。""")

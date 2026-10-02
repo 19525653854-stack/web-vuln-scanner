@@ -1,18 +1,14 @@
 # -*- coding: utf-8 -*-
-# 设计说明：规划器。把侦察结论和系统现有能力交给模型，换回一份测试计划
-# 为什么：计划由模型出而不是代码写死顺序，这正是"智能体驱动"和"死脚本扫描"的分界线
-# 放弃了：不做计划的多轮自评。计划好不好用，交给后面的反思器在一次真实执行之后再评判
+# 设计说明：规划器。计划的结构校验、兜底计划和上下文压缩都放这里
+# 为什么：计划是不是模型出的、模型给的格式对不对、拿不到计划时靠什么顶上，这些是规划这件事
+#         的地基；具体"谁来出计划"是协作层的事，不混在一起
+# 放弃了：不做计划的执行调度。出计划的不负责推进计划，推进在 agent/orchestrator.py
 #
 # 2026-10-01 规划器接入模型。此前管线里是写死的"端口扫描 -> 指纹识别"，
-# 那只是把固定流程跑通，谈不上规划；现在顺序由模型根据侦察结果决定
-import json
+# 那只是把固定流程跑通，谈不上规划；顺序改为由模型根据侦察结果决定
+# 2026-10-02 出计划的入口挪去了 agent/main_agent.py。双智能体协作进来之后，
+# 计划要经过主控出稿、顾问审查、合并三步，那三步属于协作层，不该塞进规划器
 import logging
-
-from agent.prompt_templates import PLANNER_SYSTEM_PROMPT, PLANNER_USER_TEMPLATE
-from llm.model_adapter import llm_invoke_json
-from llm.model_config import llm_build_runtime_config
-from skills.skill_manager import skill_fetch_metadata_list
-from tools.tool_registry import tool_fetch_descriptions
 
 logger = logging.getLogger("ai_scanner.planner")
 
@@ -29,6 +25,7 @@ def plan_build_fallback(recon_result):
     executed_actions = {
         tuple(action_item) for action_item in (recon_result.get("executed_actions") or [])
     }
+    logger.warning("模型不可用或没给出可用计划，回退到内置兜底计划，目标 %s", target_host)
 
     # 只排一个还没做过的侦察动作；全都做过了就交白卷，让循环正常收尾，别硬凑步骤
     fallback_candidates = (
@@ -117,47 +114,3 @@ def plan_build_executed_action_list(executed_actions):
     if not executed_actions:
         return "（还没有执行过任何动作）"
     return "\n".join("- %s / %s" % (action_item[0], action_item[1]) for action_item in executed_actions)
-
-
-def plan_build_strategy(recon_result):
-    # 设计说明：规划器主入口，返回一份可执行的测试计划
-    # 为什么：提示词里把"可用工具"和"可用技能"一起给出去，模型才不会安排出系统里根本没有的动作；
-    #         把"已执行过的动作"列出来，它才不会把做过的步骤再排一遍
-    # 放弃了：不让模型自由发挥工具名。它编名字的倾向很明确，给清单是成本最低的约束手段
-    runtime_config = llm_build_runtime_config()
-    if runtime_config is None:
-        logger.warning("没有可用的模型配置，规划器回退到内置计划")
-        return plan_build_fallback(recon_result)
-
-    fingerprint_block = recon_result.get("fingerprint") or {}
-    open_port_items = recon_result.get("open_ports") or []
-
-    planner_prompt = PLANNER_USER_TEMPLATE.safe_substitute(
-        target_url=recon_result.get("target_url") or recon_result.get("host") or "未知",
-        target_host=recon_result.get("host") or "未知",
-        open_port_list=json.dumps([item["port"] for item in open_port_items], ensure_ascii=False),
-        technologies="、".join(fingerprint_block.get("technologies") or []) or "未识别",
-        security_header_gap="、".join(fingerprint_block.get("missing_security_headers") or []) or "无",
-        recon_summary=plan_build_recon_summary(recon_result),
-        executed_action_list=plan_build_executed_action_list(recon_result.get("executed_actions")),
-        task_tree_summary=recon_result.get("task_tree_summary") or "（这是第一版计划，还没有执行记录）",
-        tool_list=json.dumps(tool_fetch_descriptions(), ensure_ascii=False, indent=2),
-        skill_list=json.dumps(skill_fetch_metadata_list(), ensure_ascii=False, indent=2),
-    )
-
-    raw_plan = llm_invoke_json(runtime_config, planner_prompt, PLANNER_SYSTEM_PROMPT)
-
-    checked_plan = plan_check_plan(raw_plan)
-    if checked_plan is None:
-        logger.warning("模型返回的计划不可用，回退到内置计划。原始返回：%s", str(raw_plan)[:150])
-        fallback_plan = plan_build_fallback(recon_result)
-        fallback_plan["plan_issue"] = "模型返回的计划不可用"
-        return fallback_plan
-
-    checked_plan["plan_source"] = "model"
-    logger.info(
-        "规划器产出计划，%s 步，来源 %s",
-        len(checked_plan["plan_steps"]),
-        checked_plan["plan_source"],
-    )
-    return checked_plan

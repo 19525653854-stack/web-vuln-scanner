@@ -6,19 +6,31 @@
 #
 # 设计背景：借鉴 AutoSec-Agent 提出的 PSV（规划-总结-验证）循环，按本系统规模做了简化——
 #           执行一步、压缩一步、判定一步，验证结论决定是继续还是收尾。循环上限取 AGENT_MAX_ROUND
+#           规划这一步是双智能体协作：主控出计划、顾问挑毛病、合并成最终计划；
+#           连续失败到阈值就互换主次角色，互换次数封顶（方案 4.2）
 import json
 import logging
 
-from cognition.planner import plan_build_strategy
+from agent.advisor_agent import agent_build_advisor_review
+from agent.main_agent import (
+    agent_build_main_plan,
+    agent_check_swap_condition,
+    agent_fetch_collaboration_mode,
+    agent_merge_advisor_advice,
+)
+from cognition.planner import plan_build_fallback
 from cognition.summarizer import summarize_round_result
 from cognition.validator import validate_round_result
-from config import AGENT_MAX_ROUND
+from config import AGENT_FAIL_SWAP_THRESHOLD, AGENT_MAX_ROUND
 from models.tables import AuditLog, Finding
 from tools.tool_registry import tool_fetch_descriptions, tool_invoke
 
 logger = logging.getLogger("ai_scanner.agent")
 
 # 工具名 -> 参数怎么凑。加新工具时在这里补一行，编排器本身不用改
+#
+# TODO(注缘): 这张表迟早要挪走。工具多起来之后，编排器不该知道每个工具要什么参数——
+#             应该由工具在 tool_register 时自己声明参数构造规则，编排器只负责调用
 TOOL_ARGUMENT_BUILDERS = {
     "port_scan": lambda scan_context: {"raw_host": scan_context["target_host"]},
     "http_probe": lambda scan_context: {"raw_url": scan_context["target_url"]},
@@ -45,8 +57,6 @@ TOOL_ARGUMENT_BUILDERS = {
     },
 }
 
-# 连着这么多轮执行失败就收尾，别把轮次耗在同一个跑不通的动作上
-MAX_IDLE_ROUND = 2
 # 重新规划的次数上限。模型有反复给同一份计划的倾向，不封顶会把循环卡死
 MAX_REPLAN_TIMES = 2
 # 循环迭代次数的硬上限。跳过重复步骤不消耗轮次，得另有一道闸防止空转过久
@@ -179,38 +189,72 @@ def agent_run_loop(job_row, session, recon_result):
     replan_times = 0
     loop_iteration = 0
     round_summaries = []
+    # 协作状态：连续失败次数、已互换次数、当前是不是互换状态
+    consecutive_failures = 0
+    swap_times = 0
+    role_swapped = False
+    collaboration_mode = agent_fetch_collaboration_mode()
 
     while round_index < AGENT_MAX_ROUND:
         loop_iteration += 1
         if loop_iteration > MAX_LOOP_ITERATION:
             logger.warning("循环迭代超过硬上限 %s 次，强制收尾", MAX_LOOP_ITERATION)
             break
-
-        # ---- 规划：没有可执行步骤就重规划一次 ----
+        # ---- 规划：主控出计划 → 顾问挑毛病 → 合并成最终计划 ----
         if task_tree is None or agent_fetch_next_step(task_tree) is None:
             if replan_times >= MAX_REPLAN_TIMES:
                 logger.info("重规划已达上限 %s 次，循环收尾", MAX_REPLAN_TIMES)
                 break
             replan_times += 1
+            fingerprint_block = scan_context["fingerprint"]
             replan_context = {
                 "target_url": target_url,
                 "host": scan_context["target_host"],
                 "open_ports": recon_result.get("open_ports") or [],
-                "fingerprint": scan_context["fingerprint"],
+                "fingerprint": fingerprint_block,
+                # 提示词模板里要的是纯列表，在这儿先摊平，省得模板里再往外挖一层字典
+                "technologies_list": fingerprint_block.get("technologies") or [],
+                "security_header_gap_list": fingerprint_block.get("missing_security_headers") or [],
                 "executed_actions": sorted(scan_context["executed_actions"]),
                 "task_tree_summary": agent_build_task_tree_summary(task_tree),
             }
-            plan_result = plan_build_strategy(replan_context)
+
+            main_plan = agent_build_main_plan(replan_context, role_swapped)
+            if main_plan is None:
+                # 主控出不了计划就走兜底，别让整轮卡在"没计划可执行"上
+                main_plan = plan_build_fallback(replan_context)
+
+            advisor_review = agent_build_advisor_review(main_plan, replan_context, role_swapped)
+            plan_result = agent_merge_advisor_advice(main_plan, advisor_review)
             task_tree = agent_build_task_tree(plan_result)
+
+            collaboration_note = [
+                "主导方 %s" % ("顾问（已互换）" if role_swapped else "主控"),
+                "协作模式 %s" % collaboration_mode,
+                "顾问 %s" % ("参与审查" if advisor_review else "本轮没给出可用意见"),
+            ]
+            if swap_times:
+                collaboration_note.append("累计互换 %s 次" % swap_times)
+
             session.add(AuditLog(
                 job_id=job_row.id,
                 log_type="decision",
                 log_content="第 %s 次规划：%s" % (replan_times, plan_result.get("plan_goal")),
-                log_reason="计划来源 %s，共 %s 步" % (
-                    plan_result.get("plan_source"),
+                log_reason="%s；计划 %s 步（主控 %s 步 + 顾问补 %s 步），顾问提了 %s 条意见" % (
+                    "，".join(collaboration_note),
                     len(plan_result.get("plan_steps") or []),
+                    len(main_plan.get("plan_steps") or []),
+                    plan_result.get("advisor_added_count", 0),
+                    plan_result.get("advisor_issue_count", 0),
                 ),
             ))
+            recon_result["collaboration"] = {
+                "mode": collaboration_mode,
+                "role_swapped": role_swapped,
+                "swap_times": swap_times,
+                "advisor_summary": plan_result.get("advisor_summary") or "",
+                "advisor_issues": (advisor_review or {}).get("advisor_issues") or [],
+            }
             session.commit()
             if agent_fetch_next_step(task_tree) is None:
                 break
@@ -247,16 +291,38 @@ def agent_run_loop(job_row, session, recon_result):
             step_node["node_status"] = "failed"
             step_node["node_note"] = str(step_error)[:120]
             idle_round += 1
+            consecutive_failures += 1
             session.add(AuditLog(
                 job_id=job_row.id,
                 log_type="tool",
                 log_content="步骤执行失败：%s / %s" % action_key,
                 log_reason=str(step_error)[:200],
             ))
-            session.commit()
-            if idle_round >= MAX_IDLE_ROUND:
-                logger.info("连续失败 %s 轮，循环收尾", idle_round)
+
+            # 连着卡住就换视角：主控和顾问互换角色，换个模型、换套提示词再来
+            if agent_check_swap_condition(consecutive_failures, swap_times):
+                role_swapped = not role_swapped
+                swap_times += 1
+                consecutive_failures = 0
+                session.add(AuditLog(
+                    job_id=job_row.id,
+                    log_type="reflection",
+                    log_content="触发角色互换，第 %s 次" % swap_times,
+                    log_reason="连续失败达到阈值 %s 次，改由%s主导" % (
+                        AGENT_FAIL_SWAP_THRESHOLD,
+                        "顾问" if role_swapped else "主控",
+                    ),
+                ))
+                session.commit()
+                continue
+
+            # 互换次数用尽还在失败，说明这条路真的走不通了，收尾
+            if consecutive_failures >= AGENT_FAIL_SWAP_THRESHOLD:
+                logger.info("连续失败 %s 次且互换次数已用尽，循环收尾", consecutive_failures)
+                session.commit()
                 break
+
+            session.commit()
             continue
 
         scan_context["executed_actions"].add(action_key)
@@ -331,6 +397,14 @@ def agent_run_loop(job_row, session, recon_result):
     recon_result["task_tree"] = task_tree
     recon_result["round_summaries"] = round_summaries
     recon_result["finished_round"] = round_index
+    # 顺序不能反：先把之前记下的顾问意见铺开，再用最终状态覆盖同名键，
+    # 否则快照里存的会是中途某一次互换前的旧状态
+    recon_result["collaboration"] = {
+        **(recon_result.get("collaboration") or {}),
+        "mode": collaboration_mode,
+        "role_swapped": role_swapped,
+        "swap_times": swap_times,
+    }
     job_row.current_round = round_index
     job_row.plan_snapshot = json.dumps({"recon": recon_result}, ensure_ascii=False)
     session.commit()
