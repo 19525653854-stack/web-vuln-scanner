@@ -98,6 +98,8 @@ def target_fetch_list(
                 "target_name": row.target_name,
                 "target_url": row.target_url,
                 "authorized": row.authorized_flag,
+                # 授权确认时间是合规凭据，列表里得能直接看到，别只给一个勾
+                "authorized_at": row.authorized_at.strftime("%Y-%m-%d %H:%M") if row.authorized_at else None,
                 "created_at": row.created_at.strftime("%Y-%m-%d %H:%M") if row.created_at else None,
             }
             for row in target_rows

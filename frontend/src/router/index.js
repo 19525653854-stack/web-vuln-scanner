@@ -3,7 +3,9 @@ import { createRouter, createWebHistory } from 'vue-router'
 import Layout from '../views/Layout.vue'
 import Login from '../views/Login.vue'
 import Settings from '../views/Settings.vue'
+import Target from '../views/Target.vue'
 import Vulnerabilities from '../views/Vulnerabilities.vue'
+import JobDetail from '../views/JobDetail.vue'
 
 const routes = [
   { path: '/login', name: 'login', component: Login, meta: { title: '登录' } },
@@ -14,11 +16,18 @@ const routes = [
     redirect: '/settings',
     children: [
       { path: 'settings', name: 'settings', component: Settings, meta: { title: '模型配置' } },
+      { path: 'target', name: 'target', component: Target, meta: { title: '目标管理' } },
       {
         path: 'vulnerabilities',
         name: 'vulnerabilities',
         component: Vulnerabilities,
         meta: { title: '漏洞列表' }
+      },
+      {
+        path: 'job/:jobId',
+        name: 'jobDetail',
+        component: JobDetail,
+        meta: { title: '任务详情' }
       }
     ]
   }

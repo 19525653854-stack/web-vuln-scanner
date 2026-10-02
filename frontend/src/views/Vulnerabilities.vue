@@ -142,9 +142,12 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
 import request from '../api/request'
+
+const route = useRoute()
 
 const findingList = ref([])
 const jobList = ref([])
@@ -251,6 +254,11 @@ async function vuln_run_generate_report() {
 }
 
 onMounted(async () => {
+  // 从任务详情页带着 job_id 跳过来的话，先把任务筛选预填上，省得人再点一遍
+  const routeJobId = Number(route.query.job_id || 0)
+  if (routeJobId) {
+    filterForm.value.job_id = routeJobId
+  }
   await vuln_load_jobs()
   await Promise.all([vuln_load_list(), vuln_load_summary()])
 })

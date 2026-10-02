@@ -152,3 +152,50 @@ def job_fetch_list(
             ],
         },
     }
+
+
+@router.get("/detail/{job_id}")
+def job_fetch_detail(
+    job_id: int,
+    session: Session = Depends(db_get_session),
+    current_user: str = Depends(auth_check_token),
+):
+    # 设计说明：取单个任务的完整执行详情，把计划快照解析出来一起返回
+    # 为什么：任务详情页要展示任务树、逐轮判定和反思结论，这些全在 plan_snapshot 里；
+    #         状态接口只给数字，画不出这些
+    # 放弃了：不上 WebSocket。页面三秒轮询一次这个接口，对这个量级够用，复杂度差一个量级
+    import json
+
+    job_row = session.query(Job).filter(Job.id == job_id).first()
+    if job_row is None:
+        return {"code": 1, "msg": "任务不存在"}
+
+    target_row = session.query(Target).filter(Target.id == job_row.target_id).first()
+    recon_block = {}
+    if job_row.plan_snapshot:
+        try:
+            recon_block = json.loads(job_row.plan_snapshot).get("recon") or {}
+        except ValueError:
+            # 快照坏了不该让详情页整个打不开，只把过程那几节置空
+            recon_block = {}
+
+    finding_count = session.query(func.count(Finding.id)).filter(Finding.job_id == job_id).scalar() or 0
+
+    return {
+        "code": 0,
+        "data": {
+            "job_id": job_row.id,
+            "status": job_row.current_job_status,
+            "current_round": job_row.current_round,
+            "total_round": job_row.total_round,
+            "started_at": job_row.started_at.strftime("%Y-%m-%d %H:%M:%S") if job_row.started_at else "",
+            "finished_at": job_row.finished_at.strftime("%Y-%m-%d %H:%M:%S") if job_row.finished_at else "",
+            "finding_count": finding_count,
+            "target_name": target_row.target_name if target_row else "（目标已删除）",
+            "target_url": target_row.target_url if target_row else "",
+            "task_tree": recon_block.get("task_tree") or {},
+            "round_summaries": recon_block.get("round_summaries") or [],
+            "reflection": recon_block.get("reflection") or {},
+            "collaboration": recon_block.get("collaboration") or {},
+        },
+    }
