@@ -5,8 +5,10 @@
 #
 # 2026-10-01 限速从技能里挪到这里。原先写在各技能自己身上，结果每个技能限各的，
 # 三个技能一起跑照样把目标打满，等于没限
+import re
 import threading
 import time
+from urllib.parse import parse_qsl, urlparse
 
 import requests
 import urllib3
@@ -69,6 +71,67 @@ def probe_fetch_http_response(raw_url):
         "body_snippet": response.text[:4000],
         "location": response.headers.get("Location"),
     }
+
+
+def probe_collect_candidate_params(raw_url, raw_body_snippet=""):
+    # 设计说明：从 URL 查询串和页面表单里收集候选参数名
+    # 为什么：注入类测试得先知道有哪些参数可以下手。让使用者手填参数列表不现实，
+    #         而 URL 的 query 和 <input name=...> 是最常见的两个入口
+    # 放弃了：不解析 JS 里动态拼出来的参数。那得跑一遍页面，V1.0 不做浏览器
+    #
+    # 2026-10-02 提取出来放在这里，SQL 注入和 XSS 两个技能都要用，各写一遍迟早走岔
+    candidate_params = []
+
+    parsed_url = urlparse(raw_url)
+    for param_name, _ in parse_qsl(parsed_url.query, keep_blank_values=True):
+        if param_name and param_name not in candidate_params:
+            candidate_params.append(param_name)
+
+    for input_match in re.finditer(r"""<input[^>]*name\s*=\s*["']([^"']+)["']""", raw_body_snippet or "", re.I):
+        input_name = input_match.group(1)
+        if input_name and input_name not in candidate_params:
+            candidate_params.append(input_name)
+
+    return candidate_params
+
+
+def probe_build_injected_url(raw_url, param_name, raw_payload):
+    # 设计说明：把某个参数的值换成 payload，拼出一条注入用的 URL
+    # 为什么：注入点的值必须被替换掉而不是追加，不然目标收到的还是原来那个正常值，测不出东西
+    # 放弃了：不做 POST 表单提交。V1.0 只测 GET 参数，POST 的验证要连带处理表单，留后面做
+    parsed_url = urlparse(raw_url)
+    param_pairs = parse_qsl(parsed_url.query, keep_blank_values=True)
+    injected_pairs = [
+        (name, raw_payload if name == param_name else value)
+        for name, value in param_pairs
+    ]
+
+    if not any(name == param_name for name, _ in param_pairs):
+        # 参数在表单里不在 query 里，直接补一个上去
+        injected_pairs.append((param_name, raw_payload))
+
+    injected_query = "&".join("%s=%s" % (name, value) for name, value in injected_pairs)
+    return "%s://%s%s?%s" % (parsed_url.scheme, parsed_url.netloc, parsed_url.path, injected_query)
+
+
+def probe_fetch_raw_text(raw_url):
+    # 设计说明：取目标的完整响应正文，给注入类检测用
+    # 为什么：http_probe 的返回里正文被截到 4000 字，而注入的数据库报错很可能落在截断之后，
+    #         检测这一步必须看到全文，否则会把能报错的点判成没有注入
+    # 放弃了：不设长度上限。真遇到巨型页面就慢一点，漏判的代价比慢一点大得多
+    probe_wait_rate_slot()
+    try:
+        response = requests.get(
+            raw_url,
+            headers=DEFAULT_HEADERS,
+            timeout=PAYLOAD_EXEC_TIMEOUT,
+            allow_redirects=False,
+            verify=False,
+        )
+        return response.text
+    except requests.RequestException:
+        # 请求失败就回空串，让调用方按"没拿到响应"处理，不要在检测函数里到处判空
+        return ""
 
 
 # 注册进工具表。任务管线按 "http_probe" 这个名字调

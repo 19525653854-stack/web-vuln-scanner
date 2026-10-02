@@ -110,19 +110,19 @@ def job_run_scan(job_id):
 
 
 def job_execute_pipeline(job_row, session):
-    # 设计说明：扫描管线，按阶段推进，返回实际执行的轮数
-    # 为什么：顺序不能乱——先按上下文匹配并加载技能，再端口扫描摸暴露面，然后指纹识别认技术栈，
-    #         最后把侦察结论交给规划器出计划
+    # 设计说明：任务入口。把上下文准备好，然后把控制权交给编排器的 PSV 循环
+    # 为什么：侦察是所有判断的前提，必须先做完；做完之后就不该再写死顺序了，
+    #         后面交给循环，一轮轮由模型规划、验证器判定
     # 放弃了：不做侦察结果缓存。同一个目标隔几天重扫，缓存的端口可能已经变了
     #
-    # TODO(注缘): PSV 循环接进来之后改成由规划器决定"每一轮"做什么。现在规划器只出计划，
-    #             计划还没被真正拿去执行，下一步是把计划落成可循环推进的任务树
+    # TODO(注缘): 侦察这几步也可以挪进循环里由计划驱动，等技能多起来再动，
+    #             现在技能只有一个，挪进去只是把固定顺序换个地方写
     #
     # tools/ 下的工具要在这里显式 import，import 时模块底部的 tool_register 会完成注册。
     # 2026-10-01 漏了 http_tool 这一行，任务跑到第二轮直接报"工具 http_probe 没有注册"
     import tools.http_tool  # noqa: F401
     import tools.port_tool  # noqa: F401
-    from cognition.planner import plan_build_strategy
+    from agent.orchestrator import agent_run_loop
     from skills.skill_manager import (
         skill_inject_dynamic_context,
         skill_load_body,
@@ -166,10 +166,14 @@ def job_execute_pipeline(job_row, session):
     # 第一轮固定做端口扫描。先摸清暴露面，后面才有得测
     open_ports = tool_invoke("port_scan", raw_host=target_host)
     recon_result = {
+        "target_url": target_row.target_url,
         "host": target_host,
         "loaded_skill": loaded_skill_name,
         "skill_context": skill_context,
         "open_ports": open_ports,
+        # 侦察阶段的动作先登记好，循环里模型要是再排一遍就会被拦下来
+        "executed_actions": [[loaded_skill_name, "port_scan"]],
+        "finished_round": 1,
     }
 
     job_row.current_round = 1
@@ -184,7 +188,6 @@ def job_execute_pipeline(job_row, session):
     session.commit()
 
     # 第二轮做指纹识别。没有 Web 端口就跳过——连 HTTP 入口都没有，认技术栈没有意义
-    finished_round = 1
     web_ports = [item["port"] for item in open_ports if item["port"] in WEB_PORT_SET]
     if not web_ports:
         session.add(AuditLog(
@@ -198,11 +201,12 @@ def job_execute_pipeline(job_row, session):
         http_result = tool_invoke("http_probe", raw_url=target_row.target_url)
         fingerprint_result = tool_invoke("fingerprint", http_result=http_result)
         recon_result["fingerprint"] = fingerprint_result
-        # 识别完把指纹回填进技能上下文，下一轮加载技能正文时 {{execute: fingerprint}} 就有值了
+        recon_result["executed_actions"].append([loaded_skill_name, "fingerprint"])
+        recon_result["finished_round"] = 2
+        # 识别完把指纹回填进技能上下文，后面再加载技能正文时 {{execute: fingerprint}} 就有值了
         skill_context["fingerprint"] = "、".join(fingerprint_result.get("technologies") or []) or "未识别出"
 
-        finished_round = 2
-        job_row.current_round = finished_round
+        job_row.current_round = 2
         job_row.plan_snapshot = json.dumps({"recon": recon_result}, ensure_ascii=False)
         session.add(AuditLog(
             job_id=job_row.id,
@@ -215,27 +219,5 @@ def job_execute_pipeline(job_row, session):
         ))
         session.commit()
 
-    # 最后一轮交给规划器。前面几步都是固定的机械动作，从这一步开始才真的在用模型做判断
-    plan_result = plan_build_strategy({
-        "target_url": target_row.target_url,
-        "host": target_host,
-        "open_ports": open_ports,
-        "fingerprint": recon_result.get("fingerprint") or {},
-    })
-    recon_result["plan"] = plan_result
-
-    finished_round += 1
-    job_row.current_round = finished_round
-    job_row.plan_snapshot = json.dumps({"recon": recon_result}, ensure_ascii=False)
-    session.add(AuditLog(
-        job_id=job_row.id,
-        log_type="decision",
-        log_content="规划器产出测试计划：%s" % plan_result.get("plan_goal"),
-        log_reason="计划来源 %s，共 %s 步；结束条件：%s" % (
-            plan_result.get("plan_source"),
-            len(plan_result.get("plan_steps") or []),
-            plan_result.get("stop_condition"),
-        ),
-    ))
-    session.commit()
-    return finished_round
+    # 侦察做完了，后面交给 PSV 循环，由它一轮轮规划、执行、总结、验证
+    return agent_run_loop(job_row, session, recon_result)

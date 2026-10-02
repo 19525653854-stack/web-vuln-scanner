@@ -12,6 +12,8 @@ import logging
 import re
 from pathlib import Path
 
+from tools.tool_registry import tool_fetch_descriptions
+
 logger = logging.getLogger("ai_scanner.skill")
 
 # 项目根目录在 skills/ 的上一层，用来把脚本文件路径换算成 import 路径
@@ -167,3 +169,25 @@ def skill_load_scripts(skill_name):
 
     logger.info("技能 %s 已加载脚本 %s 个", skill_name, len(loaded_modules))
     return loaded_modules
+
+
+def skill_load_all_scripts():
+    # 设计说明：启动时把全部技能的脚本一次性加载进来
+    # 为什么：脚本里的 tool_register 是"能力注册"。不加载的话规划器看到的工具清单是残缺的，
+    #         模型只能靠猜工具名——实测它会编出 xss_tool、sql_injection_tool 这种系统里根本没有的名字，
+    #         于是每一轮计划都以执行失败收尾
+    # 放弃了：不做真正的惰性加载。理论上可以等计划里用到某个工具时才加载对应技能，但那要求
+    #         元数据里声明"本技能提供哪些工具"，先按最省事的来
+    #
+    # 2026-10-02 原先坚持"脚本按需加载"，结果规划器压根不知道系统有哪些工具。
+    #         脚本加载只是 import，几毫秒的事；真正吃 token 的是技能正文，那一层仍然是按需的
+    loaded_total = 0
+    for skill_name in skill_metadata_cache:
+        loaded_total += len(skill_load_scripts(skill_name))
+
+    logger.info(
+        "技能脚本全部加载完成，共注册工具 %s 个：%s",
+        len(tool_fetch_descriptions()),
+        ", ".join(sorted(tool_fetch_descriptions())),
+    )
+    return loaded_total

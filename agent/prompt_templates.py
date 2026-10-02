@@ -22,7 +22,8 @@ PLANNER_SYSTEM_PROMPT = """你是 Web 安全测试的规划器，负责在一次
   "stop_condition": "满足什么条件就可以结束测试"
 }
 4. plan_steps 最多 5 步，按执行先后排
-5. 已经做过的侦察步骤不要重复安排"""
+5. 【已执行过的动作】里列出的组合，一步都不许再排
+6. 安排的步骤要和目标的实际情况匹配：目标的响应里没有表单、没有参数，就不要排注入类测试"""
 
 PLANNER_USER_TEMPLATE = Template("""【目标信息】
 目标地址：$target_url
@@ -34,6 +35,12 @@ PLANNER_USER_TEMPLATE = Template("""【目标信息】
 【上一轮侦察结论】
 $recon_summary
 
+【已执行过的动作】
+$executed_action_list
+
+【上一版计划的执行情况】
+$task_tree_summary
+
 【可用工具】
 $tool_list
 
@@ -41,3 +48,33 @@ $tool_list
 $skill_list
 
 请给出接下来的测试计划。""")
+
+VALIDATOR_SYSTEM_PROMPT = """你是 Web 安全测试的结果验证器，负责判断一轮探测结果是否构成真实发现。
+
+硬性要求：
+1. 只输出 JSON，不要解释文字，不要包在代码块里
+2. JSON 结构固定为：
+{
+  "is_vuln": true 或 false,
+  "confidence": 0 到 1 之间的小数,
+  "reason": "判断依据，说清楚是哪个证据支撑这个结论",
+  "next_action": "continue 或 stop，只能是这两个值之一"
+}
+3. 只依据给出的证据判断，不许脑补没看到的内容
+4. 拿不准就把 confidence 压低，不要为了显得有产出而硬判成漏洞
+5. 端口开着、响应头缺失这类属于配置层面的问题，可以算发现，但 confidence 不宜超过 0.6"""
+
+VALIDATOR_USER_TEMPLATE = Template("""【目标背景】
+目标地址：$target_url
+已识别技术栈：$technologies
+前置防护迹象：$waf_signals
+
+【本轮动作】
+技能：$skill_name
+工具：$tool_name
+动作理由：$step_reason
+
+【本轮结果摘要】
+$round_summary
+
+请判断这一轮是否构成真实发现，并给出下一步动作。""")

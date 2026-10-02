@@ -21,7 +21,7 @@ from api.job_router import router as job_router
 from api.target_router import router as target_router
 from config import APP_NAME, APP_VERSION
 from models.database import db_create_tables
-from skills.skill_manager import skill_load_metadata
+from skills.skill_manager import skill_load_all_scripts, skill_load_metadata
 from tools.job_scheduler import job_start_scheduler, job_stop_scheduler
 
 # 单进程用 basicConfig 就够了，真上多进程再换结构化日志
@@ -47,6 +47,10 @@ async def app_run_lifespan(app: FastAPI):
 
     # 技能元数据要赶在调度器之前加载。任务一进来就得能匹配到技能，晚一步就得干等
     skill_load_metadata()
+
+    # 技能脚本紧跟着全部加载。脚本里的 tool_register 是能力注册，不加载的话规划器
+    # 看到的工具清单是残缺的，模型只能靠猜工具名
+    skill_load_all_scripts()
 
     # 调度器放在建表之后启动。倒过来它可能先于表去接任务，第一条任务就得失败
     job_start_scheduler()

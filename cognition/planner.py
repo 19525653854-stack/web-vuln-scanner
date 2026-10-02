@@ -26,16 +26,30 @@ def plan_build_fallback(recon_result):
     #         不能因为一句话没问出来就把整轮作废
     # 放弃了：兜底计划不安排深度测试。没有模型的判断，硬凑出来的步骤只会误导后面几轮
     target_host = recon_result.get("host") or "未知目标"
+    executed_actions = {
+        tuple(action_item) for action_item in (recon_result.get("executed_actions") or [])
+    }
+
+    # 只排一个还没做过的侦察动作；全都做过了就交白卷，让循环正常收尾，别硬凑步骤
+    fallback_candidates = (
+        ("web_recon", "http_probe", "模型不可用，补一次 HTTP 探测再收尾"),
+        ("web_recon", "fingerprint", "模型不可用，补一次指纹识别再收尾"),
+        ("web_recon", "port_scan", "模型不可用，补一次端口扫描再收尾"),
+    )
+    plan_steps = [
+        {
+            "step_no": 1,
+            "skill_name": candidate_skill,
+            "tool_name": candidate_tool,
+            "step_reason": candidate_reason,
+        }
+        for candidate_skill, candidate_tool, candidate_reason in fallback_candidates
+        if (candidate_skill, candidate_tool) not in executed_actions
+    ][:1]
+
     return {
         "plan_goal": "整理 %s 的暴露面侦察结论" % target_host,
-        "plan_steps": [
-            {
-                "step_no": 1,
-                "skill_name": "web_recon",
-                "tool_name": "port_scan",
-                "step_reason": "模型不可用，本轮退回到固定的侦察流程",
-            }
-        ],
+        "plan_steps": plan_steps,
         "stop_condition": "侦察结论落库即结束",
         "plan_source": "fallback",
     }
@@ -95,9 +109,20 @@ def plan_build_recon_summary(recon_result):
     return "；".join(summary_parts)
 
 
+def plan_build_executed_action_list(executed_actions):
+    # 设计说明：把已执行过的动作排成一列，塞进提示词
+    # 为什么：模型对"不要重复安排"这种口头约束几乎不理会。把做过的组合逐条列出来，它才有东西可对照，
+    #         实测列出来之后重复步骤明显减少
+    # 放弃了：不带上每个动作的结果。结果已经在"上一轮侦察结论"那一段里，重复给只会把提示词撑长
+    if not executed_actions:
+        return "（还没有执行过任何动作）"
+    return "\n".join("- %s / %s" % (action_item[0], action_item[1]) for action_item in executed_actions)
+
+
 def plan_build_strategy(recon_result):
     # 设计说明：规划器主入口，返回一份可执行的测试计划
-    # 为什么：提示词里把"可用工具"和"可用技能"一起给出去，模型才不会安排出系统里根本没有的动作
+    # 为什么：提示词里把"可用工具"和"可用技能"一起给出去，模型才不会安排出系统里根本没有的动作；
+    #         把"已执行过的动作"列出来，它才不会把做过的步骤再排一遍
     # 放弃了：不让模型自由发挥工具名。它编名字的倾向很明确，给清单是成本最低的约束手段
     runtime_config = llm_build_runtime_config()
     if runtime_config is None:
@@ -114,6 +139,8 @@ def plan_build_strategy(recon_result):
         technologies="、".join(fingerprint_block.get("technologies") or []) or "未识别",
         security_header_gap="、".join(fingerprint_block.get("missing_security_headers") or []) or "无",
         recon_summary=plan_build_recon_summary(recon_result),
+        executed_action_list=plan_build_executed_action_list(recon_result.get("executed_actions")),
+        task_tree_summary=recon_result.get("task_tree_summary") or "（这是第一版计划，还没有执行记录）",
         tool_list=json.dumps(tool_fetch_descriptions(), ensure_ascii=False, indent=2),
         skill_list=json.dumps(skill_fetch_metadata_list(), ensure_ascii=False, indent=2),
     )
