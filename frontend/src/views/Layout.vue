@@ -3,8 +3,9 @@
     <el-aside width="210px" class="layout-aside">
       <div class="layout-logo">智能Web漏洞扫描系统</div>
       <el-menu :default-active="activeMenu" router class="layout-menu">
-        <!-- 菜单以后会随功能补齐：目标管理、任务、漏洞、报告各占一项 -->
+        <!-- 菜单以后会随功能补齐：目标管理、任务列表各占一项 -->
         <el-menu-item index="/settings">模型配置</el-menu-item>
+        <el-menu-item index="/vulnerabilities">漏洞列表</el-menu-item>
       </el-menu>
     </el-aside>
 

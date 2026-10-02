@@ -4,11 +4,12 @@
 # 放弃了：不做任务取消接口。V1.0 任务都跑得快，取消带来的状态复杂度不值得
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from api.auth_router import auth_check_token
 from models.database import db_get_session
-from models.tables import AuditLog, Job, Target
+from models.tables import AuditLog, Finding, Job, Target
 from tools.job_scheduler import job_submit_scan
 
 router = APIRouter(prefix="/job", tags=["任务管理"])
@@ -86,5 +87,68 @@ def job_fetch_status(
             "total_round": job_row.total_round,
             "started_at": job_row.started_at.strftime("%Y-%m-%d %H:%M:%S") if job_row.started_at else None,
             "finished_at": job_row.finished_at.strftime("%Y-%m-%d %H:%M:%S") if job_row.finished_at else None,
+        },
+    }
+
+
+@router.get("/list")
+def job_fetch_list(
+    page_index: int = 1,
+    page_size: int = 20,
+    session: Session = Depends(db_get_session),
+    current_user: str = Depends(auth_check_token),
+):
+    # 设计说明：分页列任务，带上目标名称和这个任务扫出多少条漏洞
+    # 为什么：漏洞列表页要按任务筛，下拉框里每个选项得让人认出是"哪个目标哪一次扫描"，
+    #         光给一个任务编号等于让人回库里查
+    # 放弃了：不做按状态筛。任务量在这个规模，按编号倒序翻一屏就够了
+    page_index = max(page_index, 1)
+    page_size = max(1, min(page_size, 100))
+
+    base_query = session.query(Job)
+    total_count = base_query.count()
+
+    # 漏洞条数一次查出来，不要顺着任务列表逐条 count——那是标准的 N+1，任务一多就拖垮接口
+    finding_counts = dict(
+        session.query(Finding.job_id, func.count(Finding.id)).group_by(Finding.job_id).all()
+    )
+
+    job_rows = (
+        base_query.order_by(Job.id.desc())
+        .offset((page_index - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    target_map = {
+        target_row.id: target_row
+        for target_row in session.query(Target).filter(
+            Target.id.in_([job_row.target_id for job_row in job_rows] or [0])
+        ).all()
+    }
+
+    return {
+        "code": 0,
+        "data": {
+            "total": total_count,
+            "page_index": page_index,
+            "page_size": page_size,
+            "items": [
+                {
+                    "job_id": job_row.id,
+                    "target_id": job_row.target_id,
+                    "target_name": (target_map[job_row.target_id].target_name
+                                    if job_row.target_id in target_map else "（目标已删除）"),
+                    "target_url": (target_map[job_row.target_id].target_url
+                                   if job_row.target_id in target_map else ""),
+                    "status": job_row.current_job_status,
+                    "current_round": job_row.current_round,
+                    "total_round": job_row.total_round,
+                    "finding_count": finding_counts.get(job_row.id, 0),
+                    "started_at": job_row.started_at.strftime("%Y-%m-%d %H:%M:%S") if job_row.started_at else "",
+                    "finished_at": job_row.finished_at.strftime("%Y-%m-%d %H:%M:%S") if job_row.finished_at else "",
+                }
+                for job_row in job_rows
+            ],
         },
     }

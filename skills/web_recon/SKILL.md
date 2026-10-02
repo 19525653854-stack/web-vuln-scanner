@@ -20,7 +20,7 @@ trigger_keywords: [侦察, 端口, 暴露面, 入口, recon, 存活, reconnaissa
 3. 指纹识别：调用 http_probe 取首页响应，再用 fingerprint 认服务端、语言、框架、CMS
    - 认到 CMS 就走对应的专项测试（WordPress 看插件、ThinkPHP 看历史漏洞）
    - 认到 WAF 或 CDN，后续 payload 测试要放慢、要更保守
-4. 输出：技术栈画像 + 缺失的安全响应头 + 建议的下一步动作
+4. 产出：技术栈画像 + 缺失的安全响应头 + 建议的下一步动作
 
 ## 决策原则
 

@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import Layout from '../views/Layout.vue'
 import Login from '../views/Login.vue'
 import Settings from '../views/Settings.vue'
+import Vulnerabilities from '../views/Vulnerabilities.vue'
 
 const routes = [
   { path: '/login', name: 'login', component: Login, meta: { title: '登录' } },
@@ -12,7 +13,13 @@ const routes = [
     // 默认落在模型配置页。系统没配模型什么都跑不起来，先让人把这一步做掉
     redirect: '/settings',
     children: [
-      { path: 'settings', name: 'settings', component: Settings, meta: { title: '模型配置' } }
+      { path: 'settings', name: 'settings', component: Settings, meta: { title: '模型配置' } },
+      {
+        path: 'vulnerabilities',
+        name: 'vulnerabilities',
+        component: Vulnerabilities,
+        meta: { title: '漏洞列表' }
+      }
     ]
   }
 ]

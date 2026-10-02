@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from api.auth_router import auth_create_default_user
 from api.auth_router import router as auth_router
 from api.config_router import router as config_router
+from api.finding_router import router as finding_router
 from api.job_router import router as job_router
 from api.report_router import router as report_router
 from api.target_router import router as target_router
@@ -80,6 +81,7 @@ app.include_router(target_router)
 app.include_router(job_router)
 app.include_router(config_router)
 app.include_router(report_router)
+app.include_router(finding_router)
 
 
 @app.exception_handler(HTTPException)

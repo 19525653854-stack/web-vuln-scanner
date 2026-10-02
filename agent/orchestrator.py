@@ -155,6 +155,17 @@ def agent_build_finding_level(confidence_score):
     return "low"
 
 
+def agent_build_finding_payload(round_summary):
+    # 设计说明：从本轮摘要里把触发的 payload 抠出来
+    # 为什么：漏洞表专门留了 raw_payload 这一列，报告和人工复核都要看"到底拿什么打出来的"，
+    #         之前这列一直是空的，漏洞列表页那一栏也就没东西可显示
+    # 放弃了：不做多结构适配。只有注入类工具的结果里带 payload，取不到就留空，不硬凑
+    hit_list = (round_summary or {}).get("hit_list") or []
+    if hit_list and isinstance(hit_list[0], dict):
+        return str(hit_list[0].get("payload") or "")[:500]
+    return ""
+
+
 def agent_execute_step(step_node, scan_context):
     # 设计说明：执行一个计划步骤，返回工具原始结果
     # 为什么：参数怎么凑交给 TOOL_ARGUMENT_BUILDERS，编排器只管"查工具在不在、凑参数、调出去"
@@ -357,6 +368,7 @@ def agent_run_loop(job_row, session, recon_result):
                 vuln_type=agent_build_finding_type(step_node),
                 vuln_level=agent_build_finding_level(verdict.get("confidence") or 0.0),
                 vuln_url=target_url,
+                raw_payload=agent_build_finding_payload(round_summary),
                 # 证据留摘要而不是全文，报告要能溯源，库也不能被正文撑爆
                 raw_evidence=json.dumps(round_summary, ensure_ascii=False)[:1000],
                 confidence=verdict.get("confidence") or 0.0,
