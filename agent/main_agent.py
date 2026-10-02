@@ -75,6 +75,7 @@ def agent_build_main_plan(plan_context, role_swapped=False):
         recon_summary=plan_build_recon_summary(plan_context),
         executed_action_list=plan_build_executed_action_list(plan_context.get("executed_actions")),
         task_tree_summary=plan_context.get("task_tree_summary") or "（这是第一版计划，还没有执行记录）",
+        strategy_notes=plan_context.get("strategy_notes") or "（还没到反思节点，暂时没有策略提示）",
         tool_list=json.dumps(tool_fetch_descriptions(), ensure_ascii=False, indent=2),
         skill_list=json.dumps(skill_fetch_metadata_list(), ensure_ascii=False, indent=2),
     )

@@ -18,6 +18,7 @@ from agent.main_agent import (
     agent_fetch_collaboration_mode,
     agent_merge_advisor_advice,
 )
+from agent.reflector import agent_run_progress_reflection
 from cognition.planner import plan_build_fallback
 from cognition.summarizer import summarize_round_result
 from cognition.validator import validate_round_result
@@ -61,6 +62,9 @@ TOOL_ARGUMENT_BUILDERS = {
 MAX_REPLAN_TIMES = 2
 # 循环迭代次数的硬上限。跳过重复步骤不消耗轮次，得另有一道闸防止空转过久
 MAX_LOOP_ITERATION = AGENT_MAX_ROUND * 3
+# 每跑满这么多轮做一次中期反思，把策略提示带进下一版计划。
+# 方案 4.5 把 5 到 10 轮划为"反思并调整策略"阶段，这个间隔就是照它定的
+REFLECT_ROUND_INTERVAL = 5
 
 
 def agent_build_task_tree(plan_result):
@@ -194,6 +198,8 @@ def agent_run_loop(job_row, session, recon_result):
     swap_times = 0
     role_swapped = False
     collaboration_mode = agent_fetch_collaboration_mode()
+    # 中期反思攒下来的策略提示，重新规划时一并交给主控
+    strategy_notes = []
 
     while round_index < AGENT_MAX_ROUND:
         loop_iteration += 1
@@ -217,6 +223,7 @@ def agent_run_loop(job_row, session, recon_result):
                 "security_header_gap_list": fingerprint_block.get("missing_security_headers") or [],
                 "executed_actions": sorted(scan_context["executed_actions"]),
                 "task_tree_summary": agent_build_task_tree_summary(task_tree),
+                "strategy_notes": "\n".join(strategy_notes),
             }
 
             main_plan = agent_build_main_plan(replan_context, role_swapped)
@@ -388,6 +395,20 @@ def agent_run_loop(job_row, session, recon_result):
             else:
                 logger.info("验证器给出 stop 且计划已走完，第 %s 轮收尾", round_index)
                 break
+
+        # 每跑满几轮停下来横着看一眼，把策略提示带进下一版计划（方案 4.5 的反思段）
+        if round_index % REFLECT_ROUND_INTERVAL == 0:
+            progress_note = agent_run_progress_reflection(
+                round_summaries, agent_build_task_tree_summary(task_tree), scan_context)
+            if progress_note:
+                strategy_notes.append(progress_note)
+                session.add(AuditLog(
+                    job_id=job_row.id,
+                    log_type="reflection",
+                    log_content="第 %s 轮中期反思：%s" % (round_index, progress_note[:90]),
+                    log_reason="每 %s 轮反思一次，结论会带进下一版计划" % REFLECT_ROUND_INTERVAL,
+                ))
+                session.commit()
 
         # 这一轮拿到了新东西，空转计数清零
         idle_round = 0

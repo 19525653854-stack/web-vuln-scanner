@@ -220,4 +220,16 @@ def job_execute_pipeline(job_row, session):
         session.commit()
 
     # 侦察做完了，后面交给 PSV 循环，由它一轮轮规划、执行、总结、验证
-    return agent_run_loop(job_row, session, recon_result)
+    final_round = agent_run_loop(job_row, session, recon_result)
+
+    # 跑完之后把发现逐条复核一遍：确认证据撑不撑得住、等级对不对、该怎么修。
+    # 这一步之前，漏洞表里的 fix_suggestion 一直是空的
+    from agent.reflector import agent_run_reflection
+
+    agent_run_reflection(job_row, session, recon_result)
+
+    # 研判结论要重新落一次快照。循环最后那次提交发生在这之前，不补这一步的话，
+    # 报告和漏洞列表页拿到的快照里没有整场结论——2026-10-02 就是这么漏掉的
+    job_row.plan_snapshot = json.dumps({"recon": recon_result}, ensure_ascii=False)
+    session.commit()
+    return final_round
