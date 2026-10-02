@@ -144,19 +144,37 @@ def probe_check_fingerprint(http_result):
     technologies.update(probe_check_cookies(response_headers))
     technologies.update(probe_check_body(http_result.get("body_snippet")))
 
+    # 头值做个 strip。有些服务端拼头时会带多余空白（模拟器都踩出来了），
+    # 留着的话报告里 Server 头后面拖一截空格，难看
+    header_lower = {str(name).lower(): str(value).strip() for name, value in response_headers.items()}
+
     title_match = re.search(r"<title[^>]*>(.*?)</title>", http_result.get("body_snippet") or "",
                             re.I | re.S)
     page_title = title_match.group(1).strip()[:80] if title_match else ""
 
-    return {
+    fingerprint_result = {
         "reachable": True,
         "status_code": http_result.get("status_code"),
         "page_title": page_title,
         "technologies": sorted(technologies),
+        # 原始值一直带上。之前只给 technologies，一个都没识别出来时返回的是空列表，
+        # 用户和验证器拿到空列表根本分不清是"没装东西"还是"没识别出来"——
+        # 把 Server 头原文摆出来，人才看得出怎么回事（2026-10-02 修的）
+        "headers_server": header_lower.get("server", ""),
+        "headers_powered_by": header_lower.get("x-powered-by", ""),
         "waf_or_cdn": probe_check_waf(response_headers),
         "missing_security_headers": probe_check_security_headers(response_headers),
         "redirect_to": http_result.get("location"),
     }
+
+    if not technologies:
+        # 一个技术点都没识别出来时补一句说明，免得空列表被当成"目标什么都没装"
+        fingerprint_result["fingerprint_note"] = (
+            "未匹配到已知指纹，Server 头原值：%s"
+            % (header_lower.get("server") or "（目标没有报出 Server 头）")
+        )
+
+    return fingerprint_result
 
 
 # 注册成工具。任务管线按 "fingerprint" 这个名字调，不直接 import 本模块

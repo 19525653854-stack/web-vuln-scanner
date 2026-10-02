@@ -66,15 +66,22 @@ def summarize_http_probe_result(raw_result):
 def summarize_fingerprint_result(raw_result):
     # 设计说明：压缩指纹识别结果
     # 为什么：指纹结果本身就已经是摘要形态，这里只做字段裁剪，去掉报告才用的细节
+    #
+    # 2026-10-02 把原始 Server 头和识别失败的说明也透传过去。指纹工具已经把
+    # 原始值带上来了，这一层要是再丢掉，验证器拿到的还是分不清状况的空列表
     fingerprint_block = raw_result or {}
-    return {
+    fingerprint_summary = {
         "reachable": fingerprint_block.get("reachable"),
         "status_code": fingerprint_block.get("status_code"),
         "technologies": fingerprint_block.get("technologies") or [],
         "page_title": fingerprint_block.get("page_title") or "",
         "missing_security_headers": fingerprint_block.get("missing_security_headers") or [],
         "waf_or_cdn": fingerprint_block.get("waf_or_cdn") or [],
+        "headers_server": fingerprint_block.get("headers_server") or "",
     }
+    if fingerprint_block.get("fingerprint_note"):
+        fingerprint_summary["fingerprint_note"] = fingerprint_block["fingerprint_note"]
+    return fingerprint_summary
 
 
 def summarize_injection_result(raw_result):
