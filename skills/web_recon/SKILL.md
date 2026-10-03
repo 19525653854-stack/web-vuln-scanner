@@ -35,6 +35,18 @@ trigger_keywords: [侦察, 端口, 暴露面, 入口, recon, 存活, reconnaissa
 - 部分端口超时：按未开放处理。重试一次看不出来新东西，还拖慢整轮
 - HTTP 拿不到响应：指纹识别直接跳过，端口扫描的结论照样保留，不让一个环节失败拖垮整轮
 
+## 使用示例
+
+一次真实扫描中本技能的轨迹：
+
+1. 规划器把端口扫描排成第一步：
+   `{"step_no": 1, "skill_name": "web_recon", "tool_name": "port_scan", "step_reason": "先摸清暴露面"}`
+2. `port_scan` 返回 21 个端口的开放情况，例如 8443 开放、3306 关闭
+3. 第二步 `http_probe` 取到响应头 `Server: nginx/1.24.0`、`X-Powered-By: PHP/8.1.0`
+4. `fingerprint` 汇总：`technologies = ["nginx", "php", "wordpress"]`，
+   `missing_security_headers` 共 4 项
+5. 结果写进计划快照，后续的注入类测试就据此决定要测哪些参数
+
 ## 当前目标信息
 
 加载正文时系统会把下面两行替换成实际内容：
